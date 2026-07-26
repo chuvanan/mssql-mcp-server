@@ -1,21 +1,23 @@
 [project]
-name = "microsoft_sql_server_mcp"
+name = "mssql-mcp-server"
 version = "0.1.0"
-description = "A Model Context Protocol (MCP) server that enables secure interaction with Microsoft SQL Server databases."
+description = "A Model Context Protocol (MCP) server for Microsoft SQL Server, with a user-approval checkpoint before any write."
 readme = "README.md"
 # Upper bound: mssql-python 1.x ships CPython bindings for cp310-cp313 only (no cp314).
-# Without it, `uvx microsoft_sql_server_mcp` resolves cleanly on 3.14 and then fails at import.
+# Without it, an install resolves cleanly on 3.14 and then fails at import.
 # TODO: relax once mssql-python publishes a cp314 wheel.
 requires-python = ">=3.11,<3.14"
 authors = [
-    {name = "Richard Han", email = "noreply@example.com"}
+    {name = "An Chu", email = "chuvanan.cva@gmail.com"},
 ]
+# Forked from https://github.com/RichardHan/mssql_mcp_server (MIT).
 license = {text = "MIT"}
 keywords = ["mcp", "mssql", "sql-server", "database", "ai"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -30,6 +32,9 @@ dependencies = [
     # in the elicitation capability pre-check.
     "mcp>=1.9",
 ]
+
+[project.urls]
+Repository = "https://github.com/chuvanan/mssql-mcp-server"
 
 [dependency-groups]
 dev = [

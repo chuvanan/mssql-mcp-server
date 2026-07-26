@@ -1,12 +1,5 @@
 # Microsoft SQL Server MCP Server
 
-[![PyPI](https://img.shields.io/pypi/v/microsoft_sql_server_mcp)](https://pypi.org/project/microsoft_sql_server_mcp/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-<a href="https://glama.ai/mcp/servers/29cpe19k30">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/29cpe19k30/badge" alt="Microsoft SQL Server MCP server" />
-</a>
-
 A [Model Context Protocol](https://modelcontextprotocol.io) server for SQL Server, built on
 [FastMCP](https://gofastmcp.com) and the
 [mssql-python](https://github.com/microsoft/mssql-python) driver.
@@ -27,6 +20,8 @@ you approve.
 
 ## Quick start
 
+This server is not published to a package index; install it from the repository.
+
 Add to your `claude_desktop_config.json`:
 
 ```json
@@ -34,7 +29,10 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "mssql": {
       "command": "uvx",
-      "args": ["microsoft_sql_server_mcp"],
+      "args": [
+        "--from", "git+https://github.com/chuvanan/mssql-mcp-server.git",
+        "mssql_mcp_server"
+      ],
       "env": {
         "MSSQL_SERVER": "localhost",
         "MSSQL_DATABASE": "your_database",
@@ -148,18 +146,22 @@ tripwire fires if a read ever produces no result set — but neither replaces da
 
 If you only need reads, use both `MSSQL_APPROVAL_MODE=readonly` and a login with `db_datareader`.
 
-## Alternative installation
+## Running from a local checkout
 
 ```bash
-pip install microsoft_sql_server_mcp
+git clone https://github.com/chuvanan/mssql-mcp-server.git
+cd mssql-mcp-server
+uv sync
 ```
+
+Then point your client at the checkout:
 
 ```json
 {
   "mcpServers": {
     "mssql": {
-      "command": "python",
-      "args": ["-m", "mssql_mcp_server"],
+      "command": "uv",
+      "args": ["--directory", "/path/to/mssql-mcp-server", "run", "python", "-m", "mssql_mcp_server"],
       "env": { "...": "..." }
     }
   }
