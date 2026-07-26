@@ -169,8 +169,8 @@ pip install microsoft_sql_server_mcp
 ## Development
 
 ```bash
-git clone https://github.com/RichardHan/mssql_mcp_server.git
-cd mssql_mcp_server
+git clone https://github.com/chuvanan/mssql-mcp-server.git
+cd mssql-mcp-server
 uv sync --group dev
 
 make test              # unit and in-memory integration tests
