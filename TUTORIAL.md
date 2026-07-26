@@ -68,7 +68,7 @@ different problems:
 export MSSQL_SERVER=localhost MSSQL_PORT=1434 \
        MSSQL_USER=mcp_demo MSSQL_PASSWORD='DemoPassword123!' \
        MSSQL_DATABASE=storefront MSSQL_TRUST_SERVER_CERTIFICATE=true
-uv run python scripts/check_connection.py
+make check-connection
 ```
 
 ```text
@@ -424,6 +424,31 @@ Drop `-v` to keep the data for next time.
 | Writes always refused | The client does not support elicitation — see [section 6](#if-your-client-cannot-prompt). |
 | Connection refused on 1433 | The compose file maps host **1434**. Set `MSSQL_PORT=1434`. |
 | Tools missing after config edit | Restart the client; MCP servers are launched at startup. |
+| `Project virtual environment directory ... is not a valid Python environment` | You have `UV_PROJECT_ENVIRONMENT` exported globally. See below. |
 
-Isolate MCP problems from database problems with `uv run python scripts/check_connection.py` —
-it uses the exact same configuration path as the server.
+Isolate MCP problems from database problems with `make check-connection` — it uses the exact
+same configuration path as the server.
+
+### `UV_PROJECT_ENVIRONMENT` set globally
+
+If a raw `uv run ...` fails with:
+
+```text
+error: Project virtual environment directory `/some/path` cannot be used because it is not a
+valid Python environment (no Python executable was found)
+```
+
+your shell exports `UV_PROJECT_ENVIRONMENT` to a fixed path. uv expects that to be the
+virtualenv *itself*, not a folder to keep venvs in — and because it is one path, every project
+on the machine would share a single environment anyway, so `uv sync` in one project overwrites
+another's dependencies.
+
+The `make` targets are immune: the Makefile pins the value to the in-project `.venv`. For a raw
+`uv` command, override it per-invocation:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv uv run python scripts/check_connection.py
+```
+
+To fix it permanently, remove the export from your shell profile (`~/.zshrc`, `~/.bashrc`); uv
+then defaults to a `.venv` inside each project, which is already gitignored here.

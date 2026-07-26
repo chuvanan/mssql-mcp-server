@@ -225,6 +225,12 @@ make dev               # MCP Inspector, which can render the approval prompt
 make check-connection  # diagnose connection settings
 ```
 
+The `make` targets pin `UV_PROJECT_ENVIRONMENT` to the in-project `.venv`, so they work even if
+you export that variable globally. Raw `uv run ...` commands do not — prefix them with
+`UV_PROJECT_ENVIRONMENT=.venv` if you hit
+`... is not a valid Python environment`. See
+[TUTORIAL.md](TUTORIAL.md#uv_project_environment-set-globally).
+
 Live tests need a real server:
 
 ```bash

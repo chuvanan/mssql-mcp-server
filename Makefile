@@ -3,6 +3,14 @@
 
 UV := uv
 
+# uv picks the project environment from UV_PROJECT_ENVIRONMENT. If that is set
+# globally to a fixed absolute path -- a fairly common habit -- then either uv
+# errors out because the path is not a virtualenv, or every project on the
+# machine shares one venv and `uv sync` in one clobbers another. Pin it to the
+# in-project .venv (uv's own default) so these targets behave identically
+# everywhere. A makefile assignment overrides the inherited environment.
+export UV_PROJECT_ENVIRONMENT := .venv
+
 install:
 	$(UV) sync --no-dev
 
