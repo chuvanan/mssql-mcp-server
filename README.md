@@ -9,6 +9,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for SQL Serve
 server and the database, and you approve or reject it. Nothing connects to the database until
 you approve.
 
+**New here?** [TUTORIAL.md](TUTORIAL.md) walks through a working demo end to end — a SQL Server
+container, sample data, client configuration, and prompts that exercise reads, schema discovery
+and the write-approval prompt.
+
 ## Features
 
 - **Approval checkpoint on every write**, with the SQL shown in full before it runs
