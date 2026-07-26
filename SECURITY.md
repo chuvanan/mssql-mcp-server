@@ -2,8 +2,12 @@
 
 ## Reporting security issues
 
-If you discover a security vulnerability, please email security@example.com rather than using
-the public issue tracker.
+Please report vulnerabilities privately through GitHub's
+[private vulnerability reporting](https://github.com/chuvanan/mssql-mcp-server/security/advisories/new)
+rather than opening a public issue.
+
+If that is unavailable, open a public issue containing only the fact that you have a report and
+a way to reach you — no details.
 
 ## The security model, stated plainly
 
