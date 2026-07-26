@@ -1,10 +1,19 @@
 -- Demo dataset for the MSSQL MCP server tutorial.
 --
--- A small storefront: customers place orders, orders contain line items,
--- line items reference products. Small enough to read, rich enough to show
--- joins, aggregation, dates, money and NULLs.
+-- A storefront at a useful scale: ~122,000 rows across four tables.
 --
--- Load with:
+--   customers        2,000
+--   products           200
+--   orders          30,000   spanning 2023-01-01 .. 2024-12-31
+--   order_items     90,000   1-5 lines per order
+--
+-- Generation is set-based (no 100k INSERT statements) and fully
+-- DETERMINISTIC: every value derives from the row number via modular
+-- arithmetic with prime multipliers, not RAND() or NEWID(). Reload it a
+-- hundred times and you get byte-identical data -- which is what lets
+-- TUTORIAL.md quote exact query results.
+--
+-- Loads in a few seconds. Run with:
 --   docker compose exec -T mssql /opt/mssql-tools18/bin/sqlcmd \
 --     -C -S localhost -U sa -P 'StrongPassword123!' -i /dev/stdin < examples/demo_data.sql
 
@@ -22,33 +31,34 @@ DROP TABLE IF EXISTS customers;
 GO
 
 CREATE TABLE customers (
-    id            INT IDENTITY(1,1) PRIMARY KEY,
+    id            INT PRIMARY KEY,
     name          NVARCHAR(100) NOT NULL,
     email         NVARCHAR(200) NOT NULL,
     country       NVARCHAR(2)   NOT NULL,
     signed_up_at  DATE          NOT NULL,
-    -- Deliberately nullable: shows how NULL surfaces through the tools.
-    referred_by   NVARCHAR(100) NULL
+    -- Deliberately nullable: roughly a third are NULL, so the tools have
+    -- something real to report as null rather than empty string.
+    referred_by   INT           NULL REFERENCES customers(id)
 );
 
 CREATE TABLE products (
-    id          INT IDENTITY(1,1) PRIMARY KEY,
-    sku         NVARCHAR(20)   NOT NULL UNIQUE,
-    name        NVARCHAR(100)  NOT NULL,
-    category    NVARCHAR(50)   NOT NULL,
-    unit_price  DECIMAL(10, 2) NOT NULL,
-    discontinued BIT           NOT NULL DEFAULT 0
+    id           INT PRIMARY KEY,
+    sku          NVARCHAR(20)   NOT NULL UNIQUE,
+    name         NVARCHAR(100)  NOT NULL,
+    category     NVARCHAR(50)   NOT NULL,
+    unit_price   DECIMAL(10, 2) NOT NULL,
+    discontinued BIT            NOT NULL DEFAULT 0
 );
 
 CREATE TABLE orders (
-    id          INT IDENTITY(1,1) PRIMARY KEY,
-    customer_id INT NOT NULL REFERENCES customers(id),
+    id          INT PRIMARY KEY,
+    customer_id INT          NOT NULL REFERENCES customers(id),
     placed_at   DATETIME2    NOT NULL,
     status      NVARCHAR(20) NOT NULL
 );
 
 CREATE TABLE order_items (
-    id         INT IDENTITY(1,1) PRIMARY KEY,
+    id         INT PRIMARY KEY,
     order_id   INT NOT NULL REFERENCES orders(id),
     product_id INT NOT NULL REFERENCES products(id),
     quantity   INT NOT NULL,
@@ -56,55 +66,138 @@ CREATE TABLE order_items (
 );
 GO
 
-INSERT INTO customers (name, email, country, signed_up_at, referred_by) VALUES
-    (N'Alice Nguyen',   N'alice@example.com',   N'VN', '2024-01-15', NULL),
-    (N'Bao Tran',       N'bao@example.com',     N'VN', '2024-02-03', N'Alice Nguyen'),
-    (N'Chidi Okafor',   N'chidi@example.com',   N'NG', '2024-02-20', NULL),
-    (N'Dana Williams',  N'dana@example.com',    N'US', '2024-03-11', N'Alice Nguyen'),
-    (N'Elif Demir',     N'elif@example.com',    N'TR', '2024-05-02', NULL),
-    (N'Farid Rahman',   N'farid@example.com',   N'MY', '2024-06-18', N'Bao Tran'),
-    (N'Grace Kim',      N'grace@example.com',   N'KR', '2024-08-27', NULL),
-    (N'Hugo Martins',   N'hugo@example.com',    N'PT', '2025-01-09', N'Dana Williams');
+-- A reusable numbers source. sys.all_objects cross-joined with itself yields
+-- millions of rows and works on every supported SQL Server version, unlike
+-- GENERATE_SERIES which needs compatibility level 160.
+CREATE OR ALTER VIEW numbers AS
+    SELECT TOP (200000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i
+    FROM sys.all_objects a CROSS JOIN sys.all_objects b;
+GO
 
-INSERT INTO products (sku, name, category, unit_price, discontinued) VALUES
-    (N'KB-001', N'Mechanical Keyboard',   N'Peripherals', 129.00, 0),
-    (N'MS-002', N'Wireless Mouse',        N'Peripherals',  45.50, 0),
-    (N'MN-003', N'27-inch Monitor',       N'Displays',    319.99, 0),
-    (N'MN-004', N'34-inch Ultrawide',     N'Displays',    649.00, 0),
-    (N'DK-005', N'Standing Desk',         N'Furniture',   540.00, 0),
-    (N'CH-006', N'Ergonomic Chair',       N'Furniture',   410.75, 0),
-    (N'HP-007', N'Noise-cancelling Headphones', N'Audio', 275.00, 0),
-    (N'WC-008', N'1080p Webcam',          N'Peripherals',  89.99, 1),
-    (N'CB-009', N'USB-C Hub',             N'Peripherals',  62.25, 0),
-    (N'LP-010', N'Laptop Stand',          N'Furniture',    75.00, 0);
+-- ---------------------------------------------------------------- customers
+INSERT INTO customers (id, name, email, country, signed_up_at, referred_by)
+SELECT
+    i,
+    CONCAT(
+        CHOOSE((i * 13) % 12 + 1, N'Alice', N'Bao', N'Chidi', N'Dana', N'Elif',
+               N'Farid', N'Grace', N'Hugo', N'Ines', N'Jae', N'Kenji', N'Lena'),
+        N' ',
+        CHOOSE((i * 29) % 10 + 1, N'Nguyen', N'Tran', N'Okafor', N'Williams',
+               N'Demir', N'Rahman', N'Kim', N'Martins', N'Silva', N'Haddad')),
+    CONCAT(N'user', i, N'@example.com'),
+    -- Weighted rather than uniform. Ten equal buckets would make every
+    -- "which country leads?" query a tie, which teaches nothing.
+    CASE
+        WHEN (i * 7) % 100 < 22 THEN N'US'
+        WHEN (i * 7) % 100 < 40 THEN N'VN'
+        WHEN (i * 7) % 100 < 52 THEN N'DE'
+        WHEN (i * 7) % 100 < 63 THEN N'IN'
+        WHEN (i * 7) % 100 < 72 THEN N'BR'
+        WHEN (i * 7) % 100 < 80 THEN N'KR'
+        WHEN (i * 7) % 100 < 87 THEN N'TR'
+        WHEN (i * 7) % 100 < 93 THEN N'MY'
+        WHEN (i * 7) % 100 < 97 THEN N'PT'
+        ELSE N'NG'
+    END,
+    DATEADD(day, (i * 4547) % 730, '2023-01-01'),
+    -- Roughly two thirds were referred, always by a lower-numbered customer.
+    -- (i * k) % i is identically zero, so the modulus must be i - 1.
+    CASE WHEN i % 3 = 0 OR i = 1 THEN NULL
+         ELSE (i * 2749) % (i - 1) + 1 END
+FROM numbers
+WHERE i <= 2000;
+GO
 
-INSERT INTO orders (customer_id, placed_at, status) VALUES
-    (1, '2024-03-02T10:15:00', N'shipped'),
-    (1, '2024-07-19T14:02:00', N'shipped'),
-    (2, '2024-04-11T09:30:00', N'shipped'),
-    (2, '2025-02-14T16:45:00', N'processing'),
-    (3, '2024-05-23T11:05:00', N'cancelled'),
-    (4, '2024-06-01T08:20:00', N'shipped'),
-    (4, '2024-11-30T19:55:00', N'shipped'),
-    (5, '2024-09-08T13:40:00', N'shipped'),
-    (6, '2024-10-17T07:10:00', N'processing'),
-    (7, '2025-01-22T12:00:00', N'shipped'),
-    (8, '2025-03-05T15:30:00', N'processing'),
-    (1, '2025-04-01T09:00:00', N'processing');
+-- ----------------------------------------------------------------- products
+INSERT INTO products (id, sku, name, category, unit_price, discontinued)
+SELECT
+    i,
+    CONCAT(
+        CHOOSE((i - 1) / 40 + 1, N'PR', N'DP', N'FN', N'AU', N'NW'),
+        N'-', FORMAT(i, N'0000')),
+    CONCAT(
+        CHOOSE((i * 11) % 8 + 1, N'Compact', N'Pro', N'Ultra', N'Studio',
+               N'Portable', N'Wireless', N'Ergonomic', N'Premium'),
+        N' ',
+        -- The noun is drawn from the product's own category, so there are no
+        -- "Ergonomic Chair" rows filed under Peripherals.
+        CASE (i - 1) / 40
+            WHEN 0 THEN CHOOSE((i * 17) % 5 + 1, N'Keyboard', N'Mouse',
+                               N'Webcam', N'Hub', N'Trackpad')
+            WHEN 1 THEN CHOOSE((i * 17) % 4 + 1, N'Monitor', N'Ultrawide',
+                               N'Display', N'Projector')
+            WHEN 2 THEN CHOOSE((i * 17) % 4 + 1, N'Desk', N'Chair',
+                               N'Stand', N'Footrest')
+            WHEN 3 THEN CHOOSE((i * 17) % 4 + 1, N'Headphones', N'Speakers',
+                               N'Microphone', N'Earbuds')
+            ELSE        CHOOSE((i * 17) % 4 + 1, N'Router', N'Switch',
+                               N'Access Point', N'Dock')
+        END),
+    -- 40 products per category, so category is a clean function of id.
+    CHOOSE((i - 1) / 40 + 1, N'Peripherals', N'Displays', N'Furniture',
+                             N'Audio', N'Networking'),
+    CAST(19.99 + ((i * 3571) % 65000) / 100.0 AS DECIMAL(10, 2)),
+    CASE WHEN i % 17 = 0 THEN 1 ELSE 0 END   -- ~6% discontinued
+FROM numbers
+WHERE i <= 200;
+GO
 
-INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES
-    (1,  1, 1, 129.00), (1,  2, 2,  45.50),
-    (2,  3, 2, 319.99),
-    (3,  5, 1, 540.00), (3,  6, 1, 410.75),
-    (4,  7, 1, 275.00), (4,  9, 3,  62.25),
-    (5,  4, 1, 649.00),
-    (6,  1, 1, 129.00), (6,  3, 1, 319.99), (6, 10, 2, 75.00),
-    (7,  6, 2, 410.75),
-    (8,  4, 1, 649.00), (8,  2, 1,  45.50),
-    (9,  8, 1,  89.99),
-    (10, 7, 2, 275.00), (10, 9, 1,  62.25),
-    (11, 5, 1, 540.00), (11, 10, 1, 75.00),
-    (12, 3, 1, 319.99), (12, 2, 1,  45.50);
+-- ------------------------------------------------------------------- orders
+INSERT INTO orders (id, customer_id, placed_at, status)
+SELECT
+    i,
+    -- Squaring a uniform draw concentrates orders on low customer ids, so a
+    -- few accounts are heavy buyers and the tail orders once. Uniform
+    -- customer assignment would give every customer the same basket.
+    ((i * 7919) % 2000) * ((i * 7919) % 2000) / 2000 + 1,
+    -- 40% of orders in 2023, 60% in 2024: a visible growth trend for
+    -- time-series questions.
+    DATEADD(minute,
+        CASE WHEN (i * 97) % 10 < 4
+             THEN (i * 5171) % 525600
+             ELSE 525600 + (i * 5171) % 525600
+        END, '2023-01-01'),
+    -- Weighted: ~70% shipped, 15% processing, 10% delivered, 5% cancelled.
+    CASE
+        WHEN (i * 31) % 100 < 70 THEN N'shipped'
+        WHEN (i * 31) % 100 < 85 THEN N'processing'
+        WHEN (i * 31) % 100 < 95 THEN N'delivered'
+        ELSE N'cancelled'
+    END
+FROM numbers
+WHERE i <= 30000;
+GO
+
+-- -------------------------------------------------------------- order_items
+-- 1-5 lines per order, keyed off the order id, giving exactly 90,000 rows.
+INSERT INTO order_items (id, order_id, product_id, quantity, unit_price)
+SELECT
+    ROW_NUMBER() OVER (ORDER BY o.id, n.i),
+    o.id,
+    p.id,
+    -- Skewed toward single units, as real baskets are.
+    CASE WHEN (o.id + n.i) % 10 < 6 THEN 1
+         WHEN (o.id + n.i) % 10 < 9 THEN 2
+         ELSE 3 END,
+    -- Mostly list price; every seventh line is discounted 10%, so "price paid
+    -- differs from current price" is a real query with real answers.
+    CASE WHEN (o.id + n.i) % 7 = 0
+         THEN CAST(p.unit_price * 0.90 AS DECIMAL(10, 2))
+         ELSE p.unit_price END
+FROM orders o
+JOIN numbers n ON n.i <= o.id % 5 + 1
+-- Squared again, so some products are bestsellers rather than every product
+-- selling identical volume.
+JOIN products p ON p.id = ((o.id * 6151 + n.i * 3571) % 200)
+                        * ((o.id * 6151 + n.i * 3571) % 200) / 200 + 1;
+GO
+
+-- Indexes you would actually want at this size; they also keep the tutorial's
+-- aggregate queries fast enough to feel interactive.
+CREATE INDEX ix_orders_customer  ON orders(customer_id);
+CREATE INDEX ix_orders_placed_at ON orders(placed_at) INCLUDE (status);
+CREATE INDEX ix_items_order      ON order_items(order_id);
+CREATE INDEX ix_items_product    ON order_items(product_id);
 GO
 
 -- A least-privilege login for the MCP server. This is the control that
@@ -129,8 +222,10 @@ ALTER ROLE db_datareader ADD MEMBER mcp_demo;
 ALTER ROLE db_datawriter ADD MEMBER mcp_demo;
 GO
 
-SELECT 'customers'   AS table_name, COUNT(*) AS rows FROM customers
-UNION ALL SELECT 'products',   COUNT(*) FROM products
-UNION ALL SELECT 'orders',     COUNT(*) FROM orders
-UNION ALL SELECT 'order_items', COUNT(*) FROM order_items;
+SELECT 'customers' AS table_name, COUNT(*) AS [rows] FROM customers
+UNION ALL SELECT 'products',    COUNT(*) FROM products
+UNION ALL SELECT 'orders',      COUNT(*) FROM orders
+UNION ALL SELECT 'order_items', COUNT(*) FROM order_items
+UNION ALL SELECT 'TOTAL', (SELECT COUNT(*) FROM customers) + (SELECT COUNT(*) FROM products)
+                        + (SELECT COUNT(*) FROM orders) + (SELECT COUNT(*) FROM order_items);
 GO

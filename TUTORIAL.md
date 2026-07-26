@@ -33,10 +33,9 @@ First start pulls a ~1.5 GB image and takes a minute or two.
 
 ## 2. Load the demo data
 
-[`examples/demo_data.sql`](examples/demo_data.sql) builds a small storefront:
-customers place orders, orders contain line items, line items reference
-products. Small enough to read in one sitting, rich enough for joins,
-aggregation, dates, money and NULLs.
+[`examples/demo_data.sql`](examples/demo_data.sql) builds a storefront at a
+useful scale — **122,200 rows** — so aggregates mean something and the row cap
+is a real constraint rather than a contrived one.
 
 ```bash
 docker compose exec -T mssql /opt/mssql-tools18/bin/sqlcmd \
@@ -47,11 +46,30 @@ docker compose exec -T mssql /opt/mssql-tools18/bin/sqlcmd \
 ```text
 table_name  rows
 ----------- -----------
-customers             8
-products             10
-orders               12
-order_items          21
+customers          2000
+products            200
+orders            30000
+order_items       90000
+TOTAL            122200
 ```
+
+Loads in about three seconds — generation is set-based, not 122,000 `INSERT`
+statements. It is also **deterministic**: every value derives from the row
+number via modular arithmetic rather than `RAND()` or `NEWID()`, so reloading
+gives byte-identical data and the query results quoted below are the ones you
+will see.
+
+The data is deliberately *skewed*, because uniform test data makes every
+analytical question a tie:
+
+| | |
+|---|---|
+| Countries | `US` 440 customers down to `NG` 60 |
+| Orders per customer | 15 to 675 — a few heavy accounts, a long tail |
+| Customers with no orders | 500 of 2000, so data-quality questions return rows |
+| Order volume | 12,000 in 2023, 18,000 in 2024 — a growth trend to find |
+| Referrals | ~⅓ of `referred_by` values are `NULL` |
+| Prices paid | every seventh line was discounted 10% off list |
 
 The script also creates a dedicated login, `mcp_demo`, in the `db_datareader`
 and `db_datawriter` roles. **Use it rather than `sa`.** Database permissions —
@@ -193,11 +211,11 @@ trips to learn what one call answers.
 
 ### Ask a question in plain language
 
-> **Prompt:** *Which countries generate the most revenue from shipped orders?*
+> **Prompt:** *Which five countries generate the most revenue from shipped orders?*
 
 ```sql
-SELECT c.country, COUNT(DISTINCT o.id) AS orders,
-       SUM(oi.quantity * oi.unit_price) AS revenue
+SELECT TOP 5 c.country, COUNT(DISTINCT o.id) AS orders,
+       CAST(SUM(oi.quantity * oi.unit_price) AS DECIMAL(12,2)) AS revenue
 FROM customers c
 JOIN orders o ON o.customer_id = c.id
 JOIN order_items oi ON oi.order_id = o.id
@@ -208,36 +226,66 @@ GROUP BY c.country ORDER BY revenue DESC
 ```json
 {
   "columns": ["country", "orders", "revenue"],
-  "rows": [["VN", 3, "1810.73"],
-           ["US", 2, "1420.49"],
-           ["TR", 1,  "694.50"],
-           ["KR", 1,  "612.25"]]
+  "rows": [["US", 5100, "7643013.53"],
+           ["VN", 3915, "5556629.56"],
+           ["DE", 2490, "3450329.17"],
+           ["IN", 2055, "2877139.82"],
+           ["BR", 1845, "2429500.83"]]
 }
 ```
 
 Note `revenue` comes back as a **string**. `DECIMAL` is serialized as text
 deliberately — routing money through a float loses precision, and silently
-wrong totals are worse than obviously awkward ones.
+wrong totals are worse than obviously awkward ones. At this scale the totals
+run to eight figures, which is exactly where float error starts to show.
+
+### Aggregate over the whole fact table
+
+> **Prompt:** *What are the three best-selling products by units?*
+
+```json
+[["Studio Webcam",     "Peripherals", 9000],
+ ["Ergonomic Trackpad", "Peripherals", 4500],
+ ["Wireless Earbuds",   "Audio",       4050]]
+```
+
+That scanned all 90,000 line items but returned three rows — the shape you want
+from a database tool. The model gets the answer, not the data.
+
+> **Prompt:** *Did order volume grow between 2023 and 2024?*
+
+```json
+[[2023, 12000], [2024, 18000]]
+```
 
 ### More prompts to try
 
 | Use case | Prompt |
 |---|---|
 | Cohort analysis | *Group customers by signup month and show how many placed an order within 90 days.* |
-| Top-N | *What are the five best-selling products by units, and by revenue? Do the lists differ?* |
-| Data quality | *Which customers have no orders? Which orders have no line items?* |
-| Referrals | *How many customers were referred, and who referred the most?* |
-| Pricing drift | *Find line items where the price paid differs from the product's current price.* |
-| Time series | *Show monthly order counts and revenue for 2024, including months with none.* |
-| Schema-first | *Before querying, describe every table, then tell me which foreign keys are missing an index.* |
+| Top-N | *What are the ten best-selling products by units, and by revenue? Do the lists differ, and why?* |
+| Concentration | *What share of revenue comes from the top 1% of customers?* |
+| Data quality | *Which customers have never ordered? How many are there?* (500) |
+| Referrals | *How many customers were referred, and who referred the most people?* (1,333 referred) |
+| Pricing drift | *Find line items where the price paid differs from the product's current list price.* |
+| Time series | *Show monthly order counts for 2024 and tell me whether there is a trend.* |
+| Segmentation | *Compare average order value by country for shipped orders only.* |
+| Discontinued stock | *Are we still selling discontinued products? Which ones, and how recently?* |
+| Schema-first | *Describe every table first, then tell me which foreign keys have no supporting index.* |
 
-The referral prompt is a good NULL test — `referred_by` is nullable, and comes
-back as a real `null`:
+The referral prompt is a good NULL test — `referred_by` is a nullable
+self-reference, and comes back as a real `null` rather than an empty string:
 
 ```json
-["Alice Nguyen", "VN", "2024-01-15", null],
-["Bao Tran",     "VN", "2024-02-03", "Alice Nguyen"]
+[1, "Bao Haddad",   "US", null],
+[2, "Chidi Silva",  "US", 1],
+[3, "Dana Martins", "US", null],
+[4, "Elif Kim",     "VN", 2]
 ```
+
+The concentration and data-quality prompts are the ones worth trying first —
+they only have interesting answers because the data is skewed, and they are the
+kind of question you would actually ask a warehouse.
 
 ### Reads cannot write, whatever the prompt says
 
@@ -270,7 +318,7 @@ Naive comment-stripping gets the second one backwards and runs the `DROP`.
 
 This is the part the server exists for.
 
-> **Prompt:** *The mechanical keyboard is on sale — set KB-001 to $99.*
+> **Prompt:** *Put the Studio Webcam (PR-0001) on sale at $19.99.*
 
 Your client shows this and waits:
 
@@ -281,7 +329,7 @@ Approve this write against SQL Server?
   Database:   storefront
   Statements: UPDATE
 
-UPDATE products SET unit_price = 99.00 WHERE sku = 'KB-001'
+UPDATE products SET unit_price = 19.99 WHERE sku = 'PR-0001'
 
 This will modify data or schema. Rejecting is safe: nothing has been executed
 yet and no database connection has been opened.
@@ -303,22 +351,36 @@ A rejection is a *normal result*, not an error. That is deliberate: an error
 invites the model to retry, and a model that retries trains you to click
 Approve without reading. Verify nothing happened:
 
-> **Prompt:** *What is KB-001 priced at now?* → still `129.00`.
+> **Prompt:** *What is PR-0001 priced at now?* → still `55.70`.
 
-Now ask again and **approve**:
+Now try one that touches many rows, and **approve** it:
+
+> **Prompt:** *Discontinue every Networking product over $600.*
 
 ```json
-{"status": "executed", "rows_affected": 1,
- "message": "Statement executed. Rows affected: 1."}
+{"status": "executed", "rows_affected": 6,
+ "message": "Statement executed. Rows affected: 6."}
 ```
 
-> **Prompt:** *What is KB-001 priced at now?* → `119.00`.
+`rows_affected` is the point here: at this scale you cannot eyeball whether a
+`WHERE` clause was too broad, so the count is your confirmation that six rows
+changed rather than all two hundred. Verify it:
+
+> **Prompt:** *How many Networking products are discontinued now?* → `8`
+
+Eight, not six: two were already discontinued before your update. `rows_affected`
+counts the rows the `WHERE` clause *matched*, not the ones whose value actually
+changed — a distinction worth knowing before you read a row count as an
+impact assessment.
 
 ### Things worth trying
 
 - **A destructive statement.** *Drop the order_items table.* The prompt shows
-  `Statements: DDL`. Reject it, then confirm the table is still there.
-- **A batch.** *Mark order 12 shipped and delete order 5.* One prompt lists
+  `Statements: DDL`. Reject it, then confirm all 90,000 rows are still there.
+- **A dangerously broad update.** *Set every order to shipped.* The prompt shows
+  the missing `WHERE` clause plainly — this is the case the checkpoint exists
+  for, and 30,000 rows is why.
+- **A batch.** *Mark order 12 shipped and delete order 99999.* One prompt lists
   `Statements: UPDATE, DELETE`, and approval covers **both**. Approval is one
   decision for the whole batch — worth knowing before you approve a long one.
 - **A read sent to the write tool.** It is redirected to `read_query` rather
@@ -346,13 +408,15 @@ paperclip → the `storefront` server).
 
 ```csv
 id,sku,name,category,unit_price,discontinued
-1,KB-001,Mechanical Keyboard,Peripherals,129.00,False
-2,MS-002,Wireless Mouse,Peripherals,45.50,False
-3,MN-003,27-inch Monitor,Displays,319.99,False
+1,PR-0001,Studio Webcam,Peripherals,55.70,False
+2,PR-0002,Ergonomic Trackpad,Peripherals,91.41,False
+3,PR-0003,Pro Mouse,Peripherals,127.12,False
 ```
 
-Useful when you want the model to *see* a small table rather than query it.
-Capped at `MSSQL_MAX_ROWS`.
+Useful when you want the model to *see* a small table rather than query it —
+`products` has 200 rows and fits comfortably. Do not attach `order_items`: at
+90,000 rows it is capped at `MSSQL_MAX_ROWS` and you would be handing the model
+a truncated fraction of the table. Query that one instead.
 
 ---
 
@@ -384,17 +448,24 @@ permission still holds.
 
 ### Row caps
 
-`MSSQL_MAX_ROWS` (default 1000) bounds every read. Truncation is never silent:
+`MSSQL_MAX_ROWS` (default 1000) bounds every read. With 90,000 line items this
+is not hypothetical:
+
+> **Prompt:** *Show me all the order line items.*
 
 ```json
-{"rows": [[1, "Mechanical Keyboard", "129.00"],
-          [2, "Wireless Mouse", "45.50"],
-          [3, "27-inch Monitor", "319.99"]],
- "row_count": 3, "truncated": true, "max_rows": 3}
+{"row_count": 1000, "truncated": true, "max_rows": 1000}
 ```
 
-`truncated: true` plus a warning to the client, so the model knows not to treat
-a partial answer as complete.
+`truncated: true` plus a warning to the client, so the model knows it is looking
+at 1,000 of 90,000 rows and should aggregate instead of paging. Compare a query
+that fits:
+
+> **Prompt:** *List every product.* → `{"row_count": 200, "truncated": false}`
+
+The cap is a guardrail against flooding the context window, not a paging API.
+The right response to hitting it is a `GROUP BY`, and telling the model that it
+was truncated is what prompts it to write one.
 
 ### What this server does not protect against
 
