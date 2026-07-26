@@ -22,6 +22,8 @@ you approve.
 
 This server is not published to a package index; install it from the repository.
 
+### Claude Desktop
+
 Add to your `claude_desktop_config.json`:
 
 ```json
@@ -44,8 +46,45 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
+### opencode
+
+Add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mssql": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "uvx",
+        "--from", "git+https://github.com/chuvanan/mssql-mcp-server.git",
+        "mssql_mcp_server"
+      ],
+      "environment": {
+        "MSSQL_SERVER": "localhost",
+        "MSSQL_DATABASE": "your_database",
+        "MSSQL_USER": "your_username",
+        "MSSQL_PASSWORD": "your_password"
+      }
+    }
+  }
+}
+```
+
+opencode's schema differs from Claude Desktop's in three ways worth noting: the executable and
+its arguments are one `command` array rather than `command` plus `args`, environment variables
+go under `environment` rather than `env`, and `"type": "local"` is required.
+
+### Either client
+
 Connecting to a local development server with a self-signed certificate? Add
 `"MSSQL_TRUST_SERVER_CERTIFICATE": "true"` — see [Encryption](#encryption).
+
+If writes come back refused with "this client cannot show approval prompts", your client does
+not implement MCP elicitation yet. That is the checkpoint working as designed — see
+[the approval workflow](#the-approval-workflow) for the options.
 
 ## Tools
 
