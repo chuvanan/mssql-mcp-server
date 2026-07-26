@@ -206,6 +206,22 @@ Breaking changes:
   existed for pymssql and would break ODBC.
 - **FreeTDS is no longer required**, on any platform.
 
+## Credits
+
+This project is a fork of [RichardHan/mssql_mcp_server](https://github.com/RichardHan/mssql_mcp_server),
+released under the MIT License and copyright © 2024 Dana K. Williams. That project established
+the original MCP server, the environment-variable configuration surface and the table resource
+model, all of which this fork builds on.
+
+What this fork changes: the server moves to [FastMCP](https://gofastmcp.com), the driver moves
+from `pymssql` to Microsoft's [mssql-python](https://github.com/microsoft/mssql-python), the
+single `execute_sql` tool is split into separate read and write tools, and every write now
+requires explicit user approval. See [Migrating from the pymssql version](#migrating-from-the-pymssql-version)
+for the full list.
+
+Thanks also to the contributors to the upstream project, whose work on LocalDB support, custom
+ports, Windows Authentication and Azure SQL encryption is carried forward here.
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE); the original copyright notice is retained.
