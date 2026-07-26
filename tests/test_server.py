@@ -243,6 +243,69 @@ async def test_resource_returns_csv(env, fake_db, client):
     assert contents[0].text == "id,name\n1,alice\n2,bob"
 
 
+async def test_resource_quotes_values_containing_commas(env, fake_db, client):
+    """A naive ",".join would split this row into three fields."""
+    fake_db(columns=["id", "name"], rows=[[1, "hello, world"]])
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+    assert contents[0].text == 'id,name\n1,"hello, world"'
+
+
+async def test_resource_escapes_embedded_quotes(env, fake_db, client):
+    fake_db(columns=["note"], rows=[['she said "hi"']])
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+    assert contents[0].text == 'note\n"she said ""hi"""'
+
+
+async def test_resource_quotes_values_containing_newlines(env, fake_db, client):
+    fake_db(columns=["note"], rows=[["line1\nline2"]])
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+    assert contents[0].text == 'note\n"line1\nline2"'
+
+
+async def test_resource_quotes_column_names_too(env, fake_db, client):
+    fake_db(columns=["a,b"], rows=[[1]])
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+    assert contents[0].text == '"a,b"\n1'
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [[1, "hello, world"]],
+        [[1, 'quote " here']],
+        [[1, "new\nline"]],
+        [[1, None]],
+        [[1, ""]],
+        [[1, 'everything: , " \n']],
+    ],
+)
+async def test_resource_output_round_trips_through_a_csv_parser(env, fake_db, client, rows):
+    """The real contract: whatever we emit must parse back to the same shape."""
+    import csv
+    import io
+
+    fake_db(columns=["id", "value"], rows=rows)
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+
+    parsed = list(csv.reader(io.StringIO(contents[0].text)))
+    assert parsed[0] == ["id", "value"]
+    assert len(parsed) == len(rows) + 1
+    expected = [["" if cell is None else str(cell) for cell in row] for row in rows]
+    assert parsed[1:] == expected
+
+
+async def test_resource_with_no_rows_returns_only_the_header(env, fake_db, client):
+    fake_db(columns=["id", "name"], rows=[])
+    async with client as c:
+        contents = await c.read_resource("mssql://users/data")
+    assert contents[0].text == "id,name"
+
+
 async def test_resource_brackets_the_table_name(env, fake_db, client):
     fake_db(columns=["a"], rows=[[1]])
     async with client as c:

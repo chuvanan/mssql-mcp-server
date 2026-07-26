@@ -11,6 +11,8 @@ client *before* they run: ``read_query`` is annotated read-only, and
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -347,9 +349,15 @@ async def table_data(table: str) -> str:
     except Exception as exc:
         raise _fail(exc) from None
 
-    lines = [",".join(result.columns)]
-    lines += [",".join("" if cell is None else str(cell) for cell in row) for row in result.rows]
-    return "\n".join(lines)
+    # csv.writer, not ",".join: a value containing a comma, a quote or a
+    # newline would otherwise break the row apart into extra fields.
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(result.columns)
+    # NULL and the empty string are both written as an empty field. CSV has no
+    # way to distinguish them; use read_query if that difference matters.
+    writer.writerows(["" if cell is None else str(cell) for cell in row] for row in result.rows)
+    return buffer.getvalue().rstrip("\n")
 
 
 # --------------------------------------------------------------------------
