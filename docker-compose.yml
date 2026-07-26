@@ -1,9 +1,6 @@
-version: "3.8"
-
 services:
-  # SQL Server
   mssql:
-    image: mcr.microsoft.com/mssql/server:2019-latest
+    image: mcr.microsoft.com/mssql/server:2022-latest
     platform: linux/amd64
     environment:
       - ACCEPT_EULA=Y
@@ -11,16 +8,19 @@ services:
     ports:
       - "${HOST_SQL_PORT:-1434}:1433"
     healthcheck:
-      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "${MSSQL_PASSWORD:-StrongPassword123!}" -Q "SELECT 1" || exit 1
+      # sqlcmd 18 lives in mssql-tools18 and needs -C to trust the
+      # container's self-signed certificate.
+      test: >-
+        /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa
+        -P "${MSSQL_PASSWORD:-StrongPassword123!}" -Q "SELECT 1" || exit 1
       interval: 10s
       timeout: 3s
       retries: 10
-      start_period: 10s
+      start_period: 30s
     volumes:
       - mssql_data:/var/opt/mssql
     mem_limit: ${SQL_MEMORY_LIMIT:-2g}
 
-  # MCP Server
   mcp_server:
     build:
       context: .
@@ -34,8 +34,11 @@ services:
       - MSSQL_USER=${MSSQL_USER:-sa}
       - MSSQL_PASSWORD=${MSSQL_PASSWORD:-StrongPassword123!}
       - MSSQL_DATABASE=${MSSQL_DATABASE:-master}
-    volumes:
-      - .:/app
+      # The container's certificate is self-signed, and ODBC Driver 18
+      # verifies certificates by default.
+      - MSSQL_TRUST_SERVER_CERTIFICATE=true
+    stdin_open: true
+    tty: true
 
 volumes:
   mssql_data:

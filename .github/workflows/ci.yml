@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11', '3.12', '3.13']
     
     steps:
     - uses: actions/checkout@v4
@@ -25,17 +25,8 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     
-    - name: Install system dependencies (Ubuntu)
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y freetds-dev
-    
-    - name: Install system dependencies (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        brew install freetds
-    
+    # No system dependencies needed: mssql-python bundles its own ODBC driver.
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -83,15 +74,15 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install bandit[toml] safety
+        pip install bandit[toml] pip-audit
     
     - name: Run Bandit security scan
       run: bandit -r src -f json -o bandit-report.json || true
     
-    - name: Run Safety check
+    - name: Run pip-audit
       run: |
-        pip install -r requirements.txt
-        safety check --json || true
+        pip install -r requirements.txt pip-audit
+        pip-audit || true
     
     - name: Upload security reports
       uses: actions/upload-artifact@v4
@@ -117,4 +108,5 @@ jobs:
     
     - name: Test Docker image
       run: |
-        docker run --rm mssql-mcp-server:test python --version
+        docker run --rm mssql-mcp-server:test \
+          python -c "import mssql_python, mssql_mcp_server; print('imports OK')"

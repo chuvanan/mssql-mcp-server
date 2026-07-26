@@ -1,9 +1,14 @@
-from . import server
-import asyncio
+"""A Model Context Protocol server for Microsoft SQL Server."""
 
-def main():
-   """Main entry point for the package."""
-   asyncio.run(server.main())
 
-# Expose important items at package level
-__all__ = ['main', 'server']
+def main() -> None:
+    """Run the MCP server over stdio."""
+    # Imported lazily so that importing this package -- which the test suite and
+    # `fastmcp inspect` both do -- never pulls in the database driver or reads
+    # configuration as a side effect.
+    from mssql_mcp_server.server import run
+
+    run()
+
+
+__all__ = ["main"]

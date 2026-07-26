@@ -3,7 +3,10 @@ name = "microsoft_sql_server_mcp"
 version = "0.1.0"
 description = "A Model Context Protocol (MCP) server that enables secure interaction with Microsoft SQL Server databases."
 readme = "README.md"
-requires-python = ">=3.11"
+# Upper bound: mssql-python 1.x ships CPython bindings for cp310-cp313 only (no cp314).
+# Without it, `uvx microsoft_sql_server_mcp` resolves cleanly on 3.14 and then fails at import.
+# TODO: relax once mssql-python publishes a cp314 wheel.
+requires-python = ">=3.11,<3.14"
 authors = [
     {name = "Richard Han", email = "noreply@example.com"}
 ]
@@ -16,16 +19,31 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "mcp>=1.0.0",
-    "pymssql>=2.2.8",
+    # 3.x required: the readonly mode uses mcp.local_provider.remove_tool,
+    # which does not exist in 2.x.
+    "fastmcp>=3.0,<4",
+    "mssql-python>=1.6,<2",
+    # Imported directly for types.ClientCapabilities / types.ElicitationCapability
+    # in the elicitation capability pre-check.
+    "mcp>=1.9",
 ]
 
-[tool.mcp]
-system_dependencies.darwin = ["freetds"]
-system_dependencies.linux = ["freetds-dev"]
-system_dependencies.win32 = []
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.1.0",
+    "ruff>=0.6",
+    "mypy>=1.0.0",
+    "bandit>=1.7.0",
+    "pip-audit>=2.6.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -36,3 +54,20 @@ mssql_mcp_server = "mssql_mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mssql_mcp_server"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "live: requires a real SQL Server (set MSSQL_LIVE_TESTS=1)",
+]
+addopts = "-m 'not live' --strict-markers"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

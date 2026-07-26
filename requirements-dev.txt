@@ -1,24 +1,18 @@
+-r requirements.txt
+
 # Testing
 pytest>=7.0.0
 pytest-asyncio>=0.23.0
 pytest-cov>=4.1.0
 pytest-timeout>=2.1.0
-pytest-xdist>=3.3.0
-pytest-mock>=3.11.0
 
 # Code Quality
-black>=23.0.0
-isort>=5.12.0
+ruff>=0.6
 mypy>=1.0.0
-ruff>=0.0.280
 
 # Security
-safety>=2.3.0
 bandit>=1.7.0
 pip-audit>=2.6.0
-
-# Performance Testing
-psutil>=5.9.0
 
 # Build and Release
 build>=1.0.0

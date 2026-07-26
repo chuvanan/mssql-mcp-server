@@ -1,26 +1,27 @@
-version: '3.8'
-
 services:
   mssql-mcp-server:
     build: .
     environment:
-      - MSSQL_SERVER=sqlserver  # Use service name for internal Docker network
+      - MSSQL_SERVER=sqlserver  # the service name on the internal Docker network
       - MSSQL_DATABASE=TestDB
       - MSSQL_USER=sa
       - MSSQL_PASSWORD=YourStrong@Passw0rd
       - MSSQL_PORT=1433
-      - MSSQL_ENCRYPT=false
+      # ODBC Driver 18 verifies the server certificate by default, and the
+      # SQL Server container ships a self-signed one.
+      - MSSQL_TRUST_SERVER_CERTIFICATE=true
+      # elicit (default) asks before every write; allow disables the checkpoint.
+      - MSSQL_APPROVAL_MODE=elicit
     depends_on:
       - sqlserver
     stdin_open: true
     tty: true
 
-  # Example SQL Server for testing
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
       - ACCEPT_EULA=Y
-      - SA_PASSWORD=YourStrong@Passw0rd
+      - MSSQL_SA_PASSWORD=YourStrong@Passw0rd
       - MSSQL_PID=Developer
     ports:
       - "1433:1433"

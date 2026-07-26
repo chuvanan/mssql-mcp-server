@@ -1,254 +1,266 @@
-"""Integration tests for MCP protocol communication and end-to-end functionality."""
+"""End-to-end tests through the in-memory MCP client.
+
+These exercise the whole path a real client takes: tool call -> classification
+-> elicitation round-trip -> execution. The elicitation handler stands in for
+the human clicking Approve or Reject.
+"""
+
+import os
+
 import pytest
-import asyncio
-import json
-from unittest.mock import Mock, patch, AsyncMock
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Resource, Tool
-from mssql_mcp_server.server import app
+from fastmcp import Client
+from fastmcp.exceptions import ToolError
+
+from mssql_mcp_server.approval import APPROVE_OPTION, REJECT_OPTION
+from mssql_mcp_server.server import mcp
+
+REQUIRES_LIVE_DB = pytest.mark.skipif(
+    os.getenv("MSSQL_LIVE_TESTS") != "1",
+    reason="Set MSSQL_LIVE_TESTS=1 and start docker compose to run live tests.",
+)
 
 
-class TestMCPProtocolIntegration:
-    """Test MCP protocol integration and communication."""
-    
-    @pytest.mark.asyncio
-    async def test_server_initialization_options(self):
-        """Test server initialization with proper options."""
-        init_options = app.create_initialization_options()
-        
-        assert init_options.server_name == "mssql_mcp_server"
-        assert init_options.server_version is not None
-        assert hasattr(init_options, 'capabilities')
-    
-    @pytest.mark.asyncio
-    async def test_full_mcp_lifecycle(self):
-        """Test complete MCP server lifecycle from init to shutdown."""
-        # Mock the stdio streams
-        mock_read_stream = AsyncMock()
-        mock_write_stream = AsyncMock()
-        
-        # Mock database connection
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                # Test resource listing
-                mock_cursor.fetchall.return_value = [('users',), ('products',)]
-                resources = await app.list_resources()
-                
-                assert len(resources) == 2
-                assert all(isinstance(r, Resource) for r in resources)
-                assert resources[0].name == "Table: users"
-                assert resources[1].name == "Table: products"
-                
-                # Test tool listing
-                tools = await app.list_tools()
-                assert len(tools) == 1
-                assert tools[0].name == "execute_sql"
-                
-                # Test tool execution
-                mock_cursor.description = [('count',)]
-                mock_cursor.fetchall.return_value = [(42,)]
-                result = await app.call_tool("execute_sql", {"query": "SELECT COUNT(*) FROM users"})
-                
-                assert len(result) == 1
-                assert isinstance(result[0], TextContent)
-                assert "42" in result[0].text
-    
-    @pytest.mark.asyncio
-    async def test_concurrent_requests(self):
-        """Test handling of concurrent MCP requests."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                # Simulate concurrent resource listing
-                mock_cursor.fetchall.return_value = [('table1',), ('table2',)]
-                
-                # Run multiple concurrent requests
-                tasks = [app.list_resources() for _ in range(10)]
-                results = await asyncio.gather(*tasks)
-                
-                # All should succeed
-                assert len(results) == 10
-                for result in results:
-                    assert len(result) == 2
-    
-    @pytest.mark.asyncio
-    async def test_error_propagation(self):
-        """Test that errors are properly propagated through MCP protocol."""
-        with patch.dict('os.environ', {}, clear=True):
-            # Missing configuration should raise error
-            with pytest.raises(ValueError, match="Missing required database configuration"):
-                await app.list_resources()
+def handler_choosing(option):
+    async def _handler(message, response_type, params, ctx):
+        return response_type(value=option)
+
+    return _handler
 
 
-class TestDatabaseIntegration:
-    """Test actual database integration scenarios."""
-    
-    @pytest.mark.asyncio
-    async def test_connection_pooling(self):
-        """Test that connections are properly managed and pooled."""
-        call_count = 0
-        
-        def mock_connect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            mock_conn = Mock()
-            mock_cursor = Mock()
-            mock_cursor.fetchall.return_value = []
-            mock_conn.cursor.return_value = mock_cursor
-            return mock_conn
-        
-        with patch('pymssql.connect', side_effect=mock_connect):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                # Multiple operations should create multiple connections
-                # (current implementation doesn't pool)
-                for _ in range(5):
-                    await app.list_resources()
-                
-                assert call_count == 5  # One connection per operation
-    
-    @pytest.mark.asyncio
-    async def test_transaction_handling(self):
-        """Test proper transaction handling for write operations."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                # Test INSERT operation
-                result = await app.call_tool("execute_sql", {
-                    "query": "INSERT INTO users (name) VALUES ('test')"
-                })
-                
-                # Verify commit was called
-                mock_conn.commit.assert_called_once()
-                assert "Rows affected: 1" in result[0].text
-    
-    @pytest.mark.asyncio
-    async def test_connection_cleanup(self):
-        """Test that connections are properly cleaned up."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                # Even if operation fails, connection should be closed
-                mock_cursor.execute.side_effect = Exception("Query failed")
-                
-                try:
-                    await app.call_tool("execute_sql", {"query": "SELECT * FROM users"})
-                except:
-                    pass
-                
-                # Connection should still be closed
-                # (Note: current implementation may not guarantee this)
+async def handler_declining(message, response_type, params, ctx):
+    from fastmcp.client.elicitation import ElicitResult
+
+    return ElicitResult(action="decline")
 
 
-class TestEdgeCases:
-    """Test edge cases and boundary conditions."""
-    
-    @pytest.mark.asyncio
-    async def test_empty_table_list(self):
-        """Test handling of database with no tables."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.fetchall.return_value = []
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                resources = await app.list_resources()
-                assert resources == []
-    
-    @pytest.mark.asyncio
-    async def test_large_result_set(self):
-        """Test handling of large query results."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        
-        # Create large result set
-        large_result = [(i, f'user_{i}', f'email_{i}@test.com') for i in range(10000)]
-        mock_cursor.description = [('id',), ('name',), ('email',)]
-        mock_cursor.fetchall.return_value = large_result
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                result = await app.call_tool("execute_sql", {
-                    "query": "SELECT * FROM users"
-                })
-                
-                # Should handle large results gracefully
-                assert len(result) == 1
-                assert isinstance(result[0].text, str)
-                assert len(result[0].text.split('\n')) == 10001  # Header + 10000 rows
-    
-    @pytest.mark.asyncio
-    async def test_special_characters_in_data(self):
-        """Test handling of special characters in query results."""
-        mock_conn = Mock()
-        mock_cursor = Mock()
-        mock_conn.cursor.return_value = mock_cursor
-        
-        # Data with special characters
-        mock_cursor.description = [('data',)]
-        mock_cursor.fetchall.return_value = [
-            ('Hello, "World"',),
-            ('Line1\nLine2',),
-            ('Tab\there',),
-            ('NULL',),
-            (None,),
-        ]
-        
-        with patch('pymssql.connect', return_value=mock_conn):
-            with patch.dict('os.environ', {
-                'MSSQL_USER': 'test',
-                'MSSQL_PASSWORD': 'test',
-                'MSSQL_DATABASE': 'testdb'
-            }):
-                result = await app.call_tool("execute_sql", {
-                    "query": "SELECT data FROM test_table"
-                })
-                
-                # Should handle special characters properly
-                assert len(result) == 1
-                text = result[0].text
-                assert 'Hello, "World"' in text
-                assert 'None' in text  # None should be converted to string
+async def handler_cancelling(message, response_type, params, ctx):
+    from fastmcp.client.elicitation import ElicitResult
+
+    return ElicitResult(action="cancel")
+
+
+# --------------------------------------------------------------------------
+# The three outcomes, end to end
+# --------------------------------------------------------------------------
+
+
+async def test_approving_executes_and_commits(env, fake_db):
+    fake_db(columns=None, affected=5)
+    async with Client(mcp, elicitation_handler=handler_choosing(APPROVE_OPTION)) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM orders"})
+
+    assert result.data.status == "executed"
+    assert result.data.rows_affected == 5
+    assert result.data.statements == ["DELETE"]
+    conn = fake_db.holder["last"]
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+
+async def test_rejecting_does_not_execute(env, no_db):
+    async with Client(mcp, elicitation_handler=handler_choosing(REJECT_OPTION)) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM orders"})
+
+    assert result.data.status == "declined"
+    assert result.data.rows_affected is None
+    assert no_db == []
+
+
+async def test_declining_the_prompt_does_not_execute(env, no_db):
+    async with Client(mcp, elicitation_handler=handler_declining) as c:
+        result = await c.call_tool("execute_write", {"sql": "DROP TABLE orders"})
+
+    assert result.data.status == "declined"
+    assert no_db == []
+
+
+async def test_cancelling_the_prompt_does_not_execute(env, no_db):
+    async with Client(mcp, elicitation_handler=handler_cancelling) as c:
+        result = await c.call_tool("execute_write", {"sql": "DROP TABLE orders"})
+
+    assert result.data.status == "cancelled"
+    assert no_db == []
+
+
+async def test_a_decline_is_a_result_not_an_error(env, no_db):
+    """Raising would invite a retry loop and train the user to click Approve."""
+    async with Client(mcp, elicitation_handler=handler_choosing(REJECT_OPTION)) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM t"})
+    assert result.is_error is False
+    assert "do not retry" in result.data.message.lower()
+
+
+# --------------------------------------------------------------------------
+# The prompt the user actually sees
+# --------------------------------------------------------------------------
+
+
+async def test_the_prompt_contains_everything_needed_to_decide(env, fake_db):
+    seen = {}
+    fake_db(columns=None, affected=1)
+
+    async def capture(message, response_type, params, ctx):
+        seen["message"] = message
+        return response_type(value=APPROVE_OPTION)
+
+    sql = "UPDATE customers SET archived = 1 WHERE last_seen < '2020-01-01'"
+    async with Client(mcp, elicitation_handler=capture) as c:
+        await c.call_tool("execute_write", {"sql": sql})
+
+    message = seen["message"]
+    assert sql in message  # the exact statement
+    assert "testdb" in message  # which database
+    assert "localhost" in message  # which server
+    assert "UPDATE" in message  # what kind of change
+    assert "Rejecting is safe" in message
+    assert "secret123" not in message
+
+
+async def test_a_multi_statement_batch_lists_every_kind(env, fake_db):
+    seen = {}
+    fake_db(columns=None, affected=1)
+
+    async def capture(message, response_type, params, ctx):
+        seen["message"] = message
+        return response_type(value=APPROVE_OPTION)
+
+    async with Client(mcp, elicitation_handler=capture) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM a; UPDATE b SET c = 1"})
+
+    assert "DELETE, UPDATE" in seen["message"]
+    assert result.data.statements == ["DELETE", "UPDATE"]
+
+
+# --------------------------------------------------------------------------
+# Approval modes
+# --------------------------------------------------------------------------
+
+
+async def test_allow_mode_executes_without_prompting(env, fake_db):
+    env(MSSQL_APPROVAL_MODE="allow")
+    fake_db(columns=None, affected=2)
+    prompted = []
+
+    async def should_not_be_called(message, response_type, params, ctx):
+        prompted.append(message)
+        return response_type(value=APPROVE_OPTION)
+
+    async with Client(mcp, elicitation_handler=should_not_be_called) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM t"})
+
+    assert result.data.status == "executed"
+    assert prompted == []
+
+
+async def test_allow_mode_works_without_an_elicitation_capable_client(env, fake_db):
+    """The escape hatch for headless and CI use."""
+    env(MSSQL_APPROVAL_MODE="allow")
+    fake_db(columns=None, affected=1)
+    async with Client(mcp) as c:
+        result = await c.call_tool("execute_write", {"sql": "DELETE FROM t"})
+    assert result.data.status == "executed"
+
+
+async def test_readonly_mode_unregisters_the_write_tool(env):
+    """A tool the model cannot see beats one it keeps being refused."""
+    from mssql_mcp_server.config import get_settings
+    from mssql_mcp_server.server import apply_approval_policy
+
+    env(MSSQL_APPROVAL_MODE="readonly")
+    saved = await mcp.get_tool("execute_write")
+    try:
+        apply_approval_policy(get_settings())
+        async with Client(mcp) as c:
+            names = {t.name for t in await c.list_tools()}
+        assert "execute_write" not in names
+        assert "read_query" in names
+    finally:
+        # The FastMCP instance is module-level and shared across tests.
+        mcp.add_tool(saved)
+
+
+async def test_the_write_tool_is_present_in_the_default_mode(env):
+    async with Client(mcp) as c:
+        names = {t.name for t in await c.list_tools()}
+    assert "execute_write" in names
+
+
+# --------------------------------------------------------------------------
+# Reads end to end
+# --------------------------------------------------------------------------
+
+
+async def test_read_and_write_round_trip(env, fake_db):
+    fake_db(columns=["id"], rows=[[1], [2]])
+    async with Client(mcp) as c:
+        read = await c.call_tool("read_query", {"sql": "SELECT id FROM t"})
+    assert read.data.rows == [[1], [2]]
+
+    fake_db(columns=None, affected=1)
+    async with Client(mcp, elicitation_handler=handler_choosing(APPROVE_OPTION)) as c:
+        write = await c.call_tool("execute_write", {"sql": "INSERT INTO t VALUES (3)"})
+    assert write.data.status == "executed"
+
+
+async def test_null_values_survive_the_round_trip(env, fake_db):
+    fake_db(columns=["a", "b"], rows=[[None, "x"]])
+    async with Client(mcp) as c:
+        result = await c.call_tool("read_query", {"sql": "SELECT a, b FROM t"})
+    assert result.data.rows == [[None, "x"]]
+
+
+async def test_a_write_sent_to_read_query_is_redirected(env, no_db):
+    async with Client(mcp) as c:
+        with pytest.raises(ToolError, match="execute_write"):
+            await c.call_tool("read_query", {"sql": "DELETE FROM t"})
+    assert no_db == []
+
+
+async def test_a_read_sent_to_execute_write_is_redirected(env, no_db):
+    """Otherwise every query routes through the approval prompt."""
+    async with Client(mcp) as c:
+        with pytest.raises(ToolError, match="read_query"):
+            await c.call_tool("execute_write", {"sql": "SELECT 1"})
+    assert no_db == []
+
+
+# --------------------------------------------------------------------------
+# Live tests -- opt in with MSSQL_LIVE_TESTS=1
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.live
+@REQUIRES_LIVE_DB
+async def test_live_read_query():
+    async with Client(mcp) as c:
+        result = await c.call_tool("read_query", {"sql": "SELECT 1 AS n"})
+    assert result.data.rows == [[1]]
+
+
+@pytest.mark.live
+@REQUIRES_LIVE_DB
+async def test_live_list_tables():
+    async with Client(mcp) as c:
+        result = await c.call_tool("list_tables", {})
+    assert isinstance(result.data, list)
+
+
+@pytest.mark.live
+@REQUIRES_LIVE_DB
+async def test_live_declined_write_leaves_the_database_untouched():
+    async with Client(mcp, elicitation_handler=handler_choosing(REJECT_OPTION)) as c:
+        result = await c.call_tool(
+            "execute_write", {"sql": "CREATE TABLE should_not_exist (a INT)"}
+        )
+        assert result.data.status == "declined"
+
+        check = await c.call_tool(
+            "read_query",
+            {
+                "sql": (
+                    "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_NAME = 'should_not_exist'"
+                )
+            },
+        )
+    assert check.data.rows == [[0]]

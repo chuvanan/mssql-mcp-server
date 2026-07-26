@@ -1,65 +1,64 @@
-.PHONY: venv install install-dev test lint format clean run docker-build docker-up docker-down docker-test docker-exec
+.PHONY: install install-dev test test-live lint format clean run inspect dev \
+        docker-build docker-up docker-down docker-test docker-exec check-connection
 
-PYTHON := python3
-VENV := venv
-BIN := $(VENV)/bin
+UV := uv
 
-venv:
-	$(PYTHON) -m venv $(VENV)
+install:
+	$(UV) sync --no-dev
 
-install: venv
-	$(BIN)/pip install -r requirements.txt
-
-install-dev: install
-	$(BIN)/pip install -r requirements-dev.txt
-	$(BIN)/pip install -e .
+install-dev:
+	$(UV) sync --group dev
 
 test: install-dev
-	$(BIN)/pytest -v
+	$(UV) run pytest -v
+
+# Requires a live SQL Server; see docker-up.
+test-live: install-dev
+	MSSQL_LIVE_TESTS=1 $(UV) run pytest -m live -v
 
 lint: install-dev
-	$(BIN)/black --check src tests
-	$(BIN)/isort --check src tests
-	$(BIN)/mypy src tests
+	$(UV) run ruff check src tests scripts
+	$(UV) run ruff format --check src tests scripts
+	$(UV) run mypy src --ignore-missing-imports
 
 format: install-dev
-	$(BIN)/black src tests
-	$(BIN)/isort src tests
+	$(UV) run ruff format src tests scripts
+	$(UV) run ruff check --fix src tests scripts
 
 clean:
-	rm -rf $(VENV) __pycache__ .pytest_cache .coverage
+	rm -rf .venv __pycache__ .pytest_cache .coverage .ruff_cache .mypy_cache dist
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name "*.egg-info" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 
 run: install
-	$(BIN)/python -m mssql_mcp_server
+	$(UV) run python -m mssql_mcp_server
 
-# Docker commands
+# Print the tool surface without connecting to anything.
+inspect: install-dev
+	$(UV) run fastmcp inspect src/mssql_mcp_server/server.py:mcp
+
+# Launch the MCP Inspector, which can render the approval prompt.
+dev: install-dev
+	$(UV) run fastmcp dev src/mssql_mcp_server/server.py:mcp
+
+# Docker
 docker-build:
-	docker-compose build
+	docker compose build
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
 
 docker-test:
-	docker-compose exec mcp_server pytest -v
+	docker compose exec mcp_server pytest -v
 
 docker-exec:
-	docker-compose exec mcp_server bash
+	docker compose exec mcp_server bash
 
-# Test MSSQL connection
-test-connection:
-	$(PYTHON) test_connection.py --server $${MSSQL_SERVER:-localhost} --port $${HOST_SQL_PORT:-1434} --user $${MSSQL_USER:-sa} --password $${MSSQL_PASSWORD:-StrongPassword123!} --database $${MSSQL_DATABASE:-master}
-
-# Set environment variables for testing
-test-env:
-	@echo "Export your database credentials before running tests:"
-	@echo "export MSSQL_SERVER=your_server"
-	@echo "export MSSQL_PORT=1433"
-	@echo "export MSSQL_USER=your_username"
-	@echo "export MSSQL_PASSWORD=your_password"
-	@echo "export MSSQL_DATABASE=your_database"
+# Diagnose the connection using the same configuration the server uses.
+# Export MSSQL_* first; the script takes no arguments.
+check-connection:
+	$(UV) run python scripts/check_connection.py
